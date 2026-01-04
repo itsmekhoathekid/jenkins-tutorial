@@ -7,13 +7,16 @@ pipeline {
   }
 
   environment {
+    // Docker
     REGISTRY = 'chadkhoanguyen/house-price-prediction-api'
     REGISTRY_CREDENTIAL = 'dockerhub'
 
+    // GCP / GKE
     PROJECT_ID  = 'tensile-axiom-482205-g8'
     REGION      = 'asia-southeast1'
     CLUSTER     = 'tensile-axiom-482205-g8-new-gke'
 
+    // WIF
     LOCATION    = 'global'
     POOL_ID     = 'jenkins-pool'
     PROVIDER_ID = 'jenkins-oidc'
@@ -25,54 +28,63 @@ pipeline {
 
   stages {
 
+    /* ============================================================
+       1) TEST
+       ============================================================ */
     stage('Test') {
-        agent { docker { image 'python:3.8' } }
-        steps {
-            sh '''
-            bash -lc '
-                set -euo pipefail
-                pip install -r requirements.txt
-                pytest
-            '
-            '''
-        }
+      agent { docker { image 'python:3.8' } }
+      steps {
+        sh '''
+          bash -lc '
+            set -euo pipefail
+            pip install -r requirements.txt
+            pytest
+          '
+        '''
+      }
     }
 
-
+    /* ============================================================
+       2) BUILD & PUSH IMAGE TO DOCKER HUB
+       ============================================================ */
     stage('Build & Push') {
       steps {
         script {
-          echo 'Building image...'
-          def dockerImage = docker.build("${REGISTRY}:${BUILD_NUMBER}")
+          def image = docker.build("${REGISTRY}:${BUILD_NUMBER}")
 
-          echo 'Pushing image to DockerHub...'
           docker.withRegistry('https://index.docker.io/v1/', REGISTRY_CREDENTIAL) {
-            dockerImage.push()
-            dockerImage.push('latest')
+            image.push()
+            image.push('latest')
           }
         }
       }
     }
 
+    /* ============================================================
+       3) AUTH (WIF) + TERRAFORM APPLY (CREATE GKE)
+       ============================================================ */
     stage('Auth (WIF) + Terraform Apply') {
       agent { docker { image 'google/cloud-sdk:slim' } }
       steps {
         withCredentials([file(credentialsId: 'jenkins-oidc-token-file', variable: 'ID_TOKEN_FILE')]) {
           sh '''
-            set -euo pipefail
+            bash -lc '
+              set -euo pipefail
 
-            apt-get update -y
-            apt-get install -y curl unzip
+              apt-get update -y
+              apt-get install -y curl unzip
 
-            TF_VER="1.6.6"
-            curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip"
-            unzip -o /tmp/terraform.zip -d /usr/local/bin
-            terraform -version
-            gcloud --version
+              # Terraform
+              TF_VER="1.6.6"
+              curl -fsSL -o /tmp/terraform.zip https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip
+              unzip -o /tmp/terraform.zip -d /usr/local/bin
+              terraform -version
 
-            PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+              # GCP project number
+              PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")"
 
-            cat > wif-creds.json <<EOF
+              # Build WIF credential file
+              cat > wif-creds.json <<EOF
 {
   "type": "external_account",
   "audience": "//iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}",
@@ -86,38 +98,46 @@ pipeline {
 }
 EOF
 
-            gcloud auth login --brief --cred-file="$PWD/wif-creds.json"
-            export GOOGLE_APPLICATION_CREDENTIALS="$PWD/wif-creds.json"
+              # Login keyless
+              gcloud auth login --brief --cred-file="$PWD/wif-creds.json"
+              export GOOGLE_APPLICATION_CREDENTIALS="$PWD/wif-creds.json"
 
-            terraform init
-            terraform validate
-            terraform plan -out=tfplan
-            terraform apply -auto-approve tfplan
+              # Terraform at repo root
+              terraform init
+              terraform validate
+              terraform plan -out=tfplan
+              terraform apply -auto-approve tfplan
+            '
           '''
         }
       }
     }
 
-    stage('Deploy to GKE (pull Docker Hub image)') {
+    /* ============================================================
+       4) DEPLOY TO GKE (PULL IMAGE FROM DOCKER HUB)
+       ============================================================ */
+    stage('Deploy to GKE') {
       agent { docker { image 'google/cloud-sdk:slim' } }
       steps {
         withCredentials([file(credentialsId: 'jenkins-oidc-token-file', variable: 'ID_TOKEN_FILE')]) {
           sh '''
-            set -euo pipefail
+            bash -lc '
+              set -euo pipefail
 
-            apt-get update -y
-            apt-get install -y curl
+              apt-get update -y
+              apt-get install -y curl
 
-            # Install kubectl if missing
-            if ! command -v kubectl >/dev/null 2>&1; then
-              curl -fsSL -o /usr/local/bin/kubectl "https://storage.googleapis.com/kubernetes-release/release/$(curl -fsSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl"
-              chmod +x /usr/local/bin/kubectl
-            fi
-            kubectl version --client=true
+              # kubectl
+              if ! command -v kubectl >/dev/null; then
+                curl -fsSL -o /usr/local/bin/kubectl \
+                  https://storage.googleapis.com/kubernetes-release/release/$(curl -fsSL https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+                chmod +x /usr/local/bin/kubectl
+              fi
 
-            PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+              PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")"
 
-            cat > wif-creds.json <<EOF
+              # WIF creds again
+              cat > wif-creds.json <<EOF
 {
   "type": "external_account",
   "audience": "//iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}",
@@ -131,22 +151,23 @@ EOF
 }
 EOF
 
-            gcloud auth login --brief --cred-file="$PWD/wif-creds.json"
-            gcloud config set project "$PROJECT_ID"
-            gcloud config set compute/region "$REGION"
+              gcloud auth login --brief --cred-file="$PWD/wif-creds.json"
+              gcloud config set project "$PROJECT_ID"
+              gcloud config set compute/region "$REGION"
 
-            gcloud container clusters get-credentials "$CLUSTER" --region "$REGION"
+              # Get kubeconfig
+              gcloud container clusters get-credentials "$CLUSTER" --region "$REGION"
 
-            IMAGE="${REGISTRY}:${BUILD_NUMBER}"
+              # Render image tag
+              IMAGE="${REGISTRY}:${BUILD_NUMBER}"
+              mkdir -p /tmp/k8s
+              sed "s|image: .*|image: ${IMAGE}|g" k8s/deployment.yaml > /tmp/k8s/deployment.yaml
+              cp k8s/service.yaml /tmp/k8s/service.yaml
 
-            mkdir -p /tmp/k8s
-            sed "s|image: .*|image: ${IMAGE}|g" k8s/deployment.yaml > /tmp/k8s/deployment.yaml
-            cp k8s/service.yaml /tmp/k8s/service.yaml
-
-            kubectl apply -f /tmp/k8s
-            kubectl rollout status deployment/house-price-api --timeout=180s
-
-            kubectl get svc house-price-api-svc
+              kubectl apply -f /tmp/k8s
+              kubectl rollout status deployment/house-price-api --timeout=180s
+              kubectl get svc house-price-api-svc
+            '
           '''
         }
       }
