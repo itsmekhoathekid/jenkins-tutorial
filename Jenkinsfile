@@ -103,6 +103,9 @@ pipeline {
 EOF
 
               export GOOGLE_APPLICATION_CREDENTIALS="$PWD/wif-creds.json"
+
+
+              cd terraform
               terraform init
               terraform apply -auto-approve
             '
