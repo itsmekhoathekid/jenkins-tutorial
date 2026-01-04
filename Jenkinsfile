@@ -11,6 +11,7 @@ pipeline {
     DOCKERHUB_CRED_ID = 'dockerhub'
 
     PROJECT_ID   = 'tensile-axiom-482205-g8'
+    PROJECT_NUMBER = '70253429250'
     REGION       = 'asia-southeast1'
     LOCATION     = 'global'
 
@@ -98,7 +99,7 @@ pipeline {
               cat > wif-creds.json <<EOF
 {
   "type": "external_account",
-  "audience": "//iam.googleapis.com/projects/${PROJECT_ID}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}",
+  "audience": "//iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}",
   "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
   "token_url": "https://sts.googleapis.com/v1/token",
   "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken",
