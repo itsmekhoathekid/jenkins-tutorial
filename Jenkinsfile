@@ -20,7 +20,9 @@ pipeline {
 
     GKE_CLUSTER_NAME = 'house-price-cluster'
     APP_NAME         = 'house-price-api'
-    TF_VER           = '1.6.6'
+
+    // Terraform binary version that pipeline downloads
+    TF_VER = '1.14.3'
   }
 
   stages {
@@ -60,6 +62,7 @@ pipeline {
 
           docker.withRegistry('https://index.docker.io/v1/', DOCKERHUB_CRED_ID) {
             sh """
+              set -e
               docker tag ${image} ${DOCKERHUB_REPO}:latest
               docker push ${DOCKERHUB_REPO}:${tag}
               docker push ${DOCKERHUB_REPO}:latest
@@ -81,13 +84,17 @@ pipeline {
           sh '''
             bash -lc '
               set -euo pipefail
+
               apt-get update -y
               apt-get install -y curl unzip python3
 
+              # Install Terraform
               curl -fsSL -o /tmp/terraform.zip \
                 https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip
               unzip -o /tmp/terraform.zip -d /usr/local/bin
+              terraform -version
 
+              # Create WIF external_account credential file
               cat > wif-creds.json <<EOF
 {
   "type": "external_account",
@@ -104,7 +111,11 @@ EOF
 
               export GOOGLE_APPLICATION_CREDENTIALS="$PWD/wif-creds.json"
 
+              # Sanity check auth
+              gcloud --quiet config set project ${PROJECT_ID}
+              gcloud --quiet auth application-default print-access-token >/dev/null
 
+              # Terraform
               cd terraform
               terraform init
               terraform apply -auto-approve
@@ -126,9 +137,29 @@ EOF
           sh '''
             bash -lc '
               set -euo pipefail
+
+              apt-get update -y
+              apt-get install -y curl unzip python3
+
+              # Re-create WIF creds in THIS container (do not assume previous stage files exist)
+              cat > wif-creds.json <<EOF
+{
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/projects/${PROJECT_ID}/locations/${LOCATION}/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+  "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken",
+  "credential_source": {
+    "file": "${ID_TOKEN_FILE}",
+    "format": { "type": "text" }
+  }
+}
+EOF
+
               export GOOGLE_APPLICATION_CREDENTIALS="$PWD/wif-creds.json"
-              gcloud config set project ${PROJECT_ID}
-              gcloud container clusters get-credentials ${GKE_CLUSTER_NAME} --region ${REGION}
+
+              gcloud --quiet config set project ${PROJECT_ID}
+              gcloud --quiet container clusters get-credentials ${GKE_CLUSTER_NAME} --region ${REGION}
 
               kubectl set image deployment/${APP_NAME} \
                 ${APP_NAME}=${DOCKERHUB_REPO}:${BUILD_NUMBER}
