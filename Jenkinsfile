@@ -26,15 +26,18 @@ pipeline {
   stages {
 
     stage('Test') {
-      agent { docker { image 'python:3.8' } }
-      steps {
-        sh '''
-          set -euo pipefail
-          pip install -r requirements.txt
-          pytest
-        '''
-      }
+        agent { docker { image 'python:3.8' } }
+        steps {
+            sh '''
+            bash -lc '
+                set -euo pipefail
+                pip install -r requirements.txt
+                pytest
+            '
+            '''
+        }
     }
+
 
     stage('Build & Push') {
       steps {
